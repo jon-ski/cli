@@ -180,17 +180,28 @@ func (c *Command) PrintUsage(ctx *Context) {
 		}
 	}
 	if c.Flags != nil {
+		// var b strings.Builder
+		// c.Flags.SetOutput(&b)
+		// c.Flags.PrintDefaults()
+		// txt := strings.TrimSpace(b.String())
+		// if txt != "" {
+		// 	fmt.Fprintln(ctx.Stderr, "\nflags:")
+		// 	fmt.Fprintln(ctx.Stderr, indent(txt, "  "))
+		// }
 		var b strings.Builder
 		c.Flags.SetOutput(&b)
 		c.Flags.PrintDefaults()
-		txt := strings.TrimSpace(b.String())
-		if txt != "" {
-			fmt.Fprintln(ctx.Stderr, "\nflags:")
-			fmt.Fprintln(ctx.Stderr, indent(txt, "  "))
+		txt := strings.TrimRight(b.String(), "\n") // keep original formatting (spaces + tabs)
+		if strings.TrimSpace(txt) != "" {
+			fmt.Fprintln(ctx.Stderr) // blank line
+			fmt.Fprintln(ctx.Stderr, "flags:")
+			// Print defaults verbatim to preserve consistent indentation from flag pkg
+			fmt.Fprintln(ctx.Stderr, txt)
 		}
 	}
 	if c.Long != "" {
-		fmt.Fprintln(ctx.Stderr, "\n", strings.TrimSpace(c.Long))
+		fmt.Fprintln(ctx.Stderr) // blank line
+		fmt.Fprintln(ctx.Stderr, strings.TrimSpace(c.Long))
 	}
 }
 

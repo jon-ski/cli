@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"flag"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -384,4 +385,156 @@ func (sv *stringValue) String() string { return sv.s }
 func (sv *stringValue) Set(v string) error {
 	sv.s = v
 	return nil
+}
+
+func TestPrintUsage_LongHasNoLeadingSpace(t *testing.T) {
+	cmd := cli.NewCommand("issue", "short", "[-out DIR] [flags]")
+	cmd.Long = "Line1\nLine2"
+	ctx, bufs := newCtx()
+	cmd.PrintUsage(ctx)
+	out := bufs.stderr.String()
+
+	// Find the Long block start (after the single blank line).
+	idx := strings.Index(out, "Line1")
+	if idx == -1 {
+		t.Fatalf("Long help not found in usage:\n%s", out)
+	}
+	// Assert no preceding space on that line.
+	lineStart := idx - 1
+	for lineStart >= 0 && out[lineStart] != '\n' {
+		lineStart--
+	}
+	// at this point, out[lineStart] == '\n' or -1; next char should be 'L'
+	if lineStart+1 < len(out) && out[lineStart+1] == ' ' {
+		t.Fatalf("Long help starts with a space; got:\n%s", out[lineStart+1:idx+6])
+	}
+}
+
+// Ensures PrintUsage prints the Long help block without a leading space
+// and with exactly one blank line before it.
+func TestPrintUsage_LongBlock_NoLeadingSpace(t *testing.T) {
+	c := cli.NewCommand("prog", "short", "[-x]")
+	c.Long = "This is the long help header.\nWith more details here."
+
+	ctx := &cli.Context{
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	}
+
+	c.PrintUsage(ctx)
+	out := ctx.Stderr.(*bytes.Buffer).String()
+
+	// Find the long help header line.
+	lines := strings.Split(out, "\n")
+
+	var idx int = -1
+	for i, ln := range lines {
+		if strings.HasPrefix(ln, "This is the long help header.") {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		t.Fatalf("long help header not found in output:\n%s", out)
+	}
+
+	// Assert no leading space on the first long line.
+	if len(lines[idx]) > 0 && (lines[idx][0] == ' ' || lines[idx][0] == '\t') {
+		t.Fatalf("long help line has leading whitespace: %q", lines[idx])
+	}
+
+	// Assert exactly one blank line precedes the long block (i.e., previous line is empty).
+	if idx == 0 || strings.TrimSpace(lines[idx-1]) != "" {
+		t.Fatalf("expected one blank line before long help; got context:\n...%q\n%q\n%q",
+			lineSafe(lines, idx-2), lineSafe(lines, idx-1), lineSafe(lines, idx))
+	}
+}
+
+// Ensures flag indentation is consistent: every flag definition line starts
+// with exactly two spaces before the dash ("  -x"), and we don't produce
+// extra-indented lines like "    -flag".
+func TestPrintUsage_FlagIndentationConsistent(t *testing.T) {
+	c := cli.NewCommand("prog", "short", "")
+	var (
+		s string
+		i int
+		b bool
+	)
+	c.Flags.StringVar(&s, "algo", "ed25519", "key algorithm")
+	c.Flags.StringVar(&s, "ca-cert", "", "CA certificate path")
+	c.Flags.StringVar(&s, "ca-key", "", "CA private key path")
+	c.Flags.BoolVar(&b, "client", false, "include client EKU")
+	c.Flags.StringVar(&s, "cn", "", "subject CommonName")
+	c.Flags.IntVar(&i, "days", 397, "leaf validity in days")
+	c.Flags.StringVar(&s, "dns", "localhost", "comma-separated DNS SANs")
+	c.Flags.StringVar(&s, "ip", "", "comma-separated IP SANs")
+	c.Flags.StringVar(&s, "name", "", "output base name")
+	c.Flags.StringVar(&s, "org", "", "subject Organization")
+	c.Flags.StringVar(&s, "out", "./certs", "output directory")
+	c.Flags.BoolVar(&b, "server", true, "include server EKU")
+
+	ctx := &cli.Context{
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	}
+	c.PrintUsage(ctx)
+	out := ctx.Stderr.(*bytes.Buffer).String()
+
+	// Extract the "flags:" block for inspection.
+	flagsIdx := strings.Index(out, "\nflags:\n")
+	if flagsIdx < 0 {
+		t.Fatalf("flags section not found in output:\n%s", out)
+	}
+	flagsBlock := out[flagsIdx+len("\nflags:\n"):]
+	// Stop at the next blank line (or end).
+	if i := strings.Index(flagsBlock, "\n\n"); i >= 0 {
+		flagsBlock = flagsBlock[:i]
+	}
+
+	lines := strings.Split(flagsBlock, "\n")
+
+	// Compile regex patterns:
+	//   goodFlagLine: exactly two spaces then '-' (e.g., "  -algo string")
+	//   badExtraIndent: four spaces then '-' (e.g., "    -ca-cert string")
+	goodFlagLine := regexp.MustCompile(`^  -[A-Za-z0-9][A-Za-z0-9\-]*\b`)
+	badExtraIndent := regexp.MustCompile(`^ {4}-`)
+
+	seenFlagLines := 0
+	for _, ln := range lines {
+		trim := strings.TrimSpace(ln)
+		if trim == "" {
+			continue
+		}
+		// Check only "flag definition" lines (those starting with spaces + '-').
+		if strings.HasPrefix(ln, " ") && strings.Contains(ln, "-") && !strings.HasPrefix(trim, "-") {
+			// Continuation/usage lines usually start with a TAB; skip them.
+			// We only validate the definition lines.
+			continue
+		}
+		if strings.HasPrefix(ln, "  -") {
+			seenFlagLines++
+			if !goodFlagLine.MatchString(ln) {
+				t.Fatalf("flag definition line not matching expected pattern '  -name': %q", ln)
+			}
+			if badExtraIndent.MatchString(ln) {
+				t.Fatalf("flag definition line has extra leading spaces: %q", ln)
+			}
+		}
+		// Also assert we never produce a 4-space indent variant.
+		if badExtraIndent.MatchString(ln) {
+			t.Fatalf("found extra-indented flag line: %q", ln)
+		}
+	}
+
+	if seenFlagLines == 0 {
+		t.Fatalf("did not detect any flag definition lines in:\n%s", flagsBlock)
+	}
+}
+
+// lineSafe protects against out-of-range indexes in failure messages.
+func lineSafe(lines []string, idx int) string {
+	if idx < 0 || idx >= len(lines) {
+		return "<nil>"
+	}
+	return lines[idx]
 }
