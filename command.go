@@ -63,6 +63,11 @@ func NewCommand(name, short, usage string) *Command {
 	// Send flag parsing errors to a buffer we control; cli will write usage consistently.
 	// We redirect to io.Discard because we handle errors and print usage ourselves.
 	fs.SetOutput(io.Discard)
+
+	// Register standard help flags on every command BEFORE parsing.
+	fs.Bool("h", false, "show help")
+	fs.Bool("help", false, "show help")
+
 	return &Command{
 		Name:  name,
 		Usage: usage,
@@ -129,25 +134,13 @@ func (c *Command) Exec(ctx *Context, args []string) error {
 			return &UsageError{Err: err}
 		}
 		args = c.Flags.Args()
-	}
 
-	// Help via -h / --help on any command.
-	if c.Flags != nil {
-		c.Flags.Visit(func(f *flag.Flag) {})
-		// FlagSet doesn't expose whether -h was set if we didn't register it.
-		// Register a standard help flag on each command for consistency.
+		// If help flag was set for this command, print usage for THIS command.
+		if c.Flags.Lookup("h").Value.String() == "true" || c.Flags.Lookup("help").Value.String() == "true" {
+			c.PrintUsage(ctx)
+			return nil
+		}
 	}
-
-	// Ensure there is a -h registered once.
-	if f := c.Flags.Lookup("h"); f == nil {
-		c.Flags.Bool("h", false, "show help")
-	}
-	if f := c.Flags.Lookup("help"); f == nil {
-		c.Flags.Bool("help", false, "show help")
-	}
-	// Re-parse only to capture -h/-help if supplied without other flags.
-	// Note: reparse only when original parse consumed zero flags; keep minimal and safe.
-	// To stay minimal, we just check os.Args form in Main; see Main below.
 
 	// No Run means this is a pure namespace node (like "go mod") -> show help or usage.
 	if c.Run == nil {
@@ -234,13 +227,6 @@ func Main(root *Command) {
 			os.Exit(2)
 		}
 		return
-	}
-	// Add standard -h/--help handling for the top-level node:
-	for _, tok := range argv[1:] {
-		if tok == "-h" || tok == "--help" {
-			root.PrintUsage(ctx)
-			os.Exit(0)
-		}
 	}
 
 	if err := root.Exec(ctx, argv[1:]); err != nil {
